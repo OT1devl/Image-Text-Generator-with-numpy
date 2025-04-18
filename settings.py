@@ -2,6 +2,7 @@ import numpy as np
 
 ######
 
+model_path = r'\Image-Text-Generator-with-numpy\models'
 
 DTYPE = np.float32
 
