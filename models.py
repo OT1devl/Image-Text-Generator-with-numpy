@@ -5,6 +5,7 @@ import time
 from functions import *
 from optimizers import *
 from utils import *
+from settings import DTYPE
 
 class Model:
     count = 0
@@ -71,6 +72,9 @@ class Generator(Model):
         z = np.random.standard_normal(size=(total, self.z_dim))
         token = one_hot(np.random.randint(low=0, high=self.n_classes, size=total), self.n_classes)
         return z, token
+    
+    def generate(self, tokens):
+        return self.forward(np.random.standard_normal(size=(tokens.shape[0], self.z_dim)), tokens)
     
     def generate_random(self, total=1):
         return self.forward(*self.make_random_tokens(total=total))
@@ -359,3 +363,196 @@ class ConditionalGAN(Model):
                 print(f"{self.name} -> time: ({total_time:.2f} sec) G Loss: {G_loss:.4f}, D Loss: {D_loss:.4f}")
         
         self.total_epochs += epochs
+
+class VAE(Model):
+    def __init__(self, n_inputs: int, z_dim: int, neurons: int, n_outputs: int,
+                 first_activation=LeakyReLU, second_activation=ReLU, last_activation=sigmoid,
+                 dtype: np.dtype=DTYPE, name: str=None):
+        super().__init__(name)
+        self.dtype = dtype
+        self._init_weights(n_inputs, z_dim, neurons, n_outputs)
+        self.first_activation = first_activation
+        self.second_activation = second_activation
+        self.last_activation = last_activation
+
+    def _init_weights(self, n_inputs, z_dim, neurons, n_outputs):
+        # Encoder
+        self.W0 = np.random.randn(n_inputs, neurons).astype(self.dtype) * np.sqrt(2/n_inputs)
+        self.b0 = np.zeros((1, neurons)).astype(self.dtype)
+
+        self.Wmu = np.random.randn(neurons, z_dim).astype(self.dtype) * np.sqrt(2/neurons)
+        self.bmu = np.zeros((1, z_dim)).astype(self.dtype)
+        self.Wlogvar = np.random.randn(neurons, z_dim).astype(self.dtype) * np.sqrt(2/neurons)
+        self.blogvar = np.zeros((1, z_dim)).astype(self.dtype)
+
+        # Decoder
+        self.W1 = np.random.randn(z_dim, neurons).astype(self.dtype) * np.sqrt(2/z_dim)
+        self.b1 = np.zeros((1, neurons)).astype(self.dtype)
+
+        self.W2 = np.random.randn(neurons, n_outputs).astype(self.dtype) * np.sqrt(2/neurons)
+        self.b2 = np.zeros((1, n_outputs)).astype(self.dtype)
+
+        self.params = [self.W0, self.b0,
+                       self.Wmu, self.bmu, self.Wlogvar, self.blogvar,
+                       self.W1, self.b1,
+                       self.W2, self.b2]
+        
+        self.n_params = len(self.params)
+
+    def kl_div(self, mu, logvar, derv=False):
+        if derv: return mu, -0.5 * (1 - np.exp(logvar))
+        return -0.5 * np.mean(1 + logvar - np.power(mu, 2) - np.exp(logvar))
+
+    def compile(self, optimizer: Optimizer):
+        self.optimizer = optimizer
+        self.optimizer.init_cache(self.n_params)
+
+    def update_params(self, grads):
+        self.optimizer.prev_update()
+        for i in range(self.n_params):
+            self.params[i] -= self.optimizer.update_params(grads[i], i)
+        self.optimizer.step()
+
+    def forward_encoder(self, x):
+        self.z0 = x @ self.W0 + self.b0
+        self.a0 = self.first_activation(self.z0)
+
+        self.mue = self.a0 @ self.Wmu + self.bmu
+        self.logvare = self.a0 @ self.Wlogvar + self.blogvar
+
+        return self.mue, self.logvare
+    
+    def forward_decoder(self, z):
+        self.z1 = z @ self.W1 + self.b1
+        self.a1 = self.second_activation(self.z1)
+
+        self.z2 = self.a1 @ self.W2 + self.b2
+        self.a2 = self.last_activation(self.z2)
+
+        return self.a2
+    
+    def forward(self, x):
+        mue, logvare = self.forward_encoder(x)
+        self.rand_sample = np.random.standard_normal(size=mue.shape)
+        self.z = mue + np.exp(logvare * 0.5) * self.rand_sample
+        reconstruction = self.forward_decoder(self.z)
+        return reconstruction, mue, logvare
+    
+    def backward(self, x, outp, learn=True):
+        batch_size = x.shape[0]
+
+        dL = BinaryCrossEntropyLoss(x, outp, derv=True) / batch_size
+        dL *= self.last_activation(outp, derv=True)
+
+        dW2 = self.a1.T @ dL
+        db2 = dL.sum(axis=0, keepdims=True)
+        
+        da1 = dL @ self.W2.T
+        dz1 = da1 * self.second_activation(self.z1, derv=True)
+        
+        dW1 = self.z.T @ dz1
+        db1 = dz1.sum(axis=0, keepdims=True)
+        
+        dz = dz1 @ self.W1.T
+        
+        dlrelu = self.first_activation(self.z0, derv=True)
+        
+        # MU
+
+        dmu = dz
+        
+        dWmu = self.a0.T @ dmu
+        dbmu = dmu.sum(axis=0, keepdims=True)
+        
+        da0mu = dmu @ self.Wmu.T
+        dz0mu = da0mu * dlrelu
+        
+        dW0mu = x.T @ dz0mu
+        db0mu = dz0mu.sum(axis=0, keepdims=True)
+        
+        # LOGVAR
+
+        dlogvar = dz * np.exp(self.logvare * 0.5) * 0.5 * self.rand_sample
+        
+        dWlogvar = self.a0.T @ dlogvar
+        dblogvar = dlogvar.sum(axis=0, keepdims=True)
+        
+        da0logvar = dlogvar @ self.Wlogvar.T
+        dz0logvar = da0logvar * dlrelu
+        
+        dW0logvar = x.T @ dz0logvar
+        db0logvar = dz0logvar.sum(axis=0, keepdims=True)
+        
+        # KL DIV
+
+        dKL_mu, dKL_logvar = self.kl_div(self.mue, self.logvare, derv=True)
+        dKL_mu /= batch_size
+        dKL_logvar /= batch_size
+        
+        # KL MU
+
+        dKL_Wmu = self.a0.T @ dKL_mu
+        dKL_bmu = dKL_mu.sum(axis=0, keepdims=True)
+        
+        dKL_a0mu = dKL_mu @ self.Wmu.T
+        dKL_z0mu = dKL_a0mu * dlrelu
+        
+        dKL_W0mu = x.T @ dKL_z0mu
+        dKL_b0mu = dKL_z0mu.sum(axis=0, keepdims=True)
+        
+        # KL LOGVAR
+
+        dKL_Wlogvar = self.a0.T @ dKL_logvar
+        dKL_blogvar = dKL_logvar.sum(axis=0, keepdims=True)
+        
+        dKL_a0logvar = dKL_logvar @ self.Wlogvar.T
+        dKL_z0logvar = dKL_a0logvar * dlrelu
+        
+        dKL_W0logvar = x.T @ dKL_z0logvar
+        dKL_b0logvar = dKL_z0logvar.sum(axis=0, keepdims=True)
+        
+        dW0 = dW0mu + dW0logvar + dKL_W0mu + dKL_W0logvar
+        db0 = db0mu + db0logvar + dKL_b0mu + dKL_b0logvar
+        
+        dWmu += dKL_Wmu
+        dbmu += dKL_bmu
+        dWlogvar += dKL_Wlogvar
+        dblogvar += dKL_blogvar
+        
+        grads = (dW0, db0,
+                 dWmu, dbmu, dWlogvar, dblogvar,
+                 dW1, db1,
+                 dW2, db2)
+
+        if learn:
+            self.update_params(grads)
+    
+    def train(self, x, epochs=10, batch_size=32, print_every=0.1, shuffle=True, debug=False):
+        total_batch = np.ceil(x.shape[0]/batch_size).astype(int)
+        for ep in range(1, epochs+1):
+            total_KL_loss = 0.0
+            total_loss = 0.0
+
+            if shuffle: np.random.shuffle(x)
+
+            for batch in range(0, x.shape[0], batch_size):
+                x_batch = x[batch:batch+batch_size]
+                reconstruction, mue, logvare = self.forward(x_batch)
+                self.backward(x=x_batch, outp=reconstruction, learn=True)
+                KL_loss = self.kl_div(mue, logvare)
+                loss = BinaryCrossEntropyLoss(x_batch, reconstruction) + KL_loss
+
+                total_KL_loss += KL_loss
+                total_loss += loss
+
+                if debug:
+                    print(f'Loss: {loss}, KL Loss: {KL_loss}')
+
+            avg_loss = total_loss / total_batch
+            avg_KL_loss = total_KL_loss / total_batch
+
+            if ep % max(1, int(epochs * print_every)) == 0:
+                print(f'Epoch: [{ep}/{epochs}] Avg Loss: {avg_loss:.4f} | Avg KL Loss: {avg_KL_loss:.4f}')
+
+class DNN(Model):
+    pass
