@@ -2,9 +2,9 @@
 <h3 align="center">🎨 Generate Visual Characters from Text using GANs and Neural Networks</h3>
 
 <p align="center">
-  <img src="https://img.shields.io/github/languages/top/OT1devl/Text-Rendering-Network?style=flat" alt="Languages" />
-  <img src="https://img.shields.io/github/languages/count/OT1devl/Text-Rendering-Network?style=flat" alt="Language Breakdown" />
-  <img src="https://img.shields.io/github/last-commit/OT1devl/Text-Rendering-Network?style=flat" alt="Last Commit" />
+  <img src="https://img.shields.io/github/languages/top/OT1devl/Image-Text-Generator-with-numpy?style=flat" alt="Languages" />
+  <img src="https://img.shields.io/github/languages/count/OT1devl/Image-Text-Generator-with-numpy?style=flat" alt="Language Breakdown" />
+  <img src="https://img.shields.io/github/last-commit/OT1devl/Image-Text-Generator-with-numpy?style=flat" alt="Last Commit" />
 </p>
 
 ---
