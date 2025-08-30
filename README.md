@@ -48,9 +48,3 @@ These modules work together to render complete text, character by character, lik
 
 - **Python**
 - **NumPy**
-
----
-
-### 📱 **Contact**
-
-📧 **Email:** *[otidevv1@gmail.com](mailto:otidevv1@gmail.com)* 
